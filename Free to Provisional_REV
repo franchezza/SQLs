@@ -1,0 +1,654 @@
+-- =========================================================================
+-- FREE TO PROVISIONAL CONVERSION ANALYSIS
+-- FULL QUERY — ALL CHANGES INCORPORATED
+--
+-- CHANGE LOG:
+-- CHANGE 1: Added UNION in Step 1 to pull ghost users via activity_type_id = 24
+-- CHANGE 2: Added 'Ghost' to user type filter in Step 3
+-- CHANGE 3: Step 5D updated — trigger action is campaign-specific
+--             Campaign 55646 = Comment Test → Comment actions only
+--             Campaign 55647 = Create Test  → Create actions only
+--           Direct-to-Member users excluded (Admin-promoted, not action-driven)
+-- CHANGE 4: Step 5D feature names updated with CONFIRMED names from
+--           USER_FEATURE_USAGE_DAILY validation queries
+--             Campaign 55646 Comment actions: Create Container Comment New,
+--                                             Create Container Comment Reply
+--             Campaign 55647 Create actions:  Full confirmed list of 21 features
+-- CHANGE 5: Step 8 updated to reflect new Step 5D columns
+--           Added ADMIN_PROMOTED_TO_MEMBER flag
+-- =========================================================================
+
+
+-- =========================================================================
+-- STEP 1: CREATE COHORT TABLE - ALL USERS WHO RECEIVED EMAIL + GHOST USERS
+-- CHANGE 1: Added UNION to pull ghost users via activity_type_id = 24
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_COHORTS2 AS
+
+SELECT
+    DISTINCT b.USER_ID,
+    b.USER_UID,
+    a.ACTIVITY_DATE_TIME AS START_DATE,
+    a.ACTIVITY_TYPE_ID,
+    j.NAME AS ACTIVITY_NAME,
+    a.CAMPAIGN_ID,
+    a.PRIMARY_ATTRIBUTE_VALUE,
+    a.CAMPAIGN_ID || ' - ' || SPLIT_PART(a.PRIMARY_ATTRIBUTE_VALUE, '.', 1) AS CAMPAIGN_ID_FRIENDLY,
+    b.EMAIL_ADDRESS,
+    I.PLAN_ID,
+    I.PLAN_UID,
+    I.PLAN_PRODUCT_NAME AS PRODUCT_NAME_AT_SEND,
+    d.DOMAIN_TYPE,
+    d.DOMAIN,
+    d.COMPANY_SIZE,
+    d.COMPANY_SIZE_RANGE,
+    CASE
+        WHEN I.PLAN_UID LIKE '%us%' THEN '.COM'
+        WHEN I.PLAN_UID LIKE '%eu%' THEN '.EU'
+        WHEN I.PLAN_UID LIKE '%au%' THEN '.AU'
+    END AS SMARTSHEET_INSTANCE,
+    CASE WHEN K.ACCOUNT_OWNER_CSM IS NOT NULL THEN 1 ELSE 0 END AS HAS_CS_REP,
+    CASE
+        WHEN LOWER(SUB.SUBSCRIPTION_PRODUCT_NAME) LIKE '%standard support%' THEN '1 - Standard Support'
+        WHEN LOWER(SUB.SUBSCRIPTION_PRODUCT_NAME) LIKE '%pro support%'      THEN '2 - Pro Support'
+        WHEN LOWER(SUB.SUBSCRIPTION_PRODUCT_NAME) LIKE '%premium support%'  THEN '3 - Premium Support'
+    END AS SUPPORT_TYPE,
+    CASE WHEN UPPER(M.USER_TYPE) = 'PAID USER' THEN 1 ELSE 0 END AS STILL_LICENSED,
+    K.IS_USER_SUBSCRIPTION_MODEL,
+    CASE
+        WHEN UPPER(N.LANGUAGE) = 'ENGLISH'    THEN 'English'
+        WHEN UPPER(N.LANGUAGE) = 'FRENCH'     THEN 'French'
+        WHEN UPPER(N.LANGUAGE) = 'GERMAN'     THEN 'German'
+        WHEN UPPER(N.LANGUAGE) = 'ITALIAN'    THEN 'Italian'
+        WHEN UPPER(N.LANGUAGE) = 'JAPANESE'   THEN 'Japanese'
+        WHEN UPPER(N.LANGUAGE) = 'PORTUGUESE' THEN 'Portuguese'
+        WHEN UPPER(N.LANGUAGE) = 'RUSSIAN'    THEN 'Russian'
+        WHEN UPPER(N.LANGUAGE) = 'SPANISH'    THEN 'Spanish'
+        ELSE 'English - Default'
+    END AS LANGUAGE,
+    CASE WHEN N.TITLE_LEVEL >= 50 THEN 1 ELSE 0 END AS HVT
+FROM MARKETO.ACTIVITY_EMAIL_E a
+INNER JOIN MARKETO.LEAD b
+    ON a.LEAD_ID = b.LEAD_ID
+LEFT JOIN BASE.DOMAIN d
+    ON SPLIT_PART(LOWER(b.EMAIL_ADDRESS), '@', 2) = LOWER(d.DOMAIN)
+LEFT JOIN BASE.USER_PROFILE_J I
+    ON b.USER_ID = I.USER_ID
+    AND I.EFFECTIVE_FROM <= a.ACTIVITY_DATE_TIME
+    AND I.EFFECTIVE_TO > a.ACTIVITY_DATE_TIME
+LEFT JOIN MARKETO.ACTIVITY_TYPE_DISTINCT j
+    ON a.ACTIVITY_TYPE_ID = j.ID
+LEFT JOIN BASE.PLAN K
+    ON I.PLAN_ID = K.PLAN_ID
+LEFT JOIN BASE.SUBSCRIPTION SUB
+    ON I.PLAN_UID = SUB.PLAN_UID
+LEFT JOIN BASE.USER_PROFILE M
+    ON b.USER_ID = M.USER_ID
+LEFT JOIN BASE.USER_IDENTIFICATION N
+    ON b.USER_ID = N.USER_ID
+WHERE
+    a.CAMPAIGN_ID IN (55646, 55647)
+    AND a.ACTIVITY_TYPE_ID = 6
+    AND d.DOMAIN NOT IN ('smartsheet.com', 'mbfcorp.com')
+
+UNION
+
+-- CHANGE 1: Ghost users from LMR145B_1_COHORTS
+SELECT
+    DISTINCT
+    g.USER_ID,
+    g.USER_UID,
+    g.START_DATE,
+    g.ACTIVITY_TYPE_ID,
+    g.NAME AS ACTIVITY_NAME,
+    g.CAMPAIGN_ID,
+    g.PRIMARY_ATTRIBUTE_VALUE,
+    g.CAMPAIGN_ID_FRIENDLY,
+    b.EMAIL_ADDRESS,
+    g.PLAN_ID,
+    g.PLAN_UID,
+    g.PRODUCT_NAME_AT_SEND,
+    g.DOMAIN_TYPE,
+    g.DOMAIN,
+    g.COMPANY_SIZE,
+    g.COMPANY_SIZE_RANGE,
+    g.SMARTSHEET_INSTANCE,
+    g.HAS_CS_REP,
+    g.SUPPORT_TYPE,
+    g.STILL_LICENSED,
+    g.IS_USER_SUBSCRIPTION_MODEL,
+    g.LANGUAGE,
+    g.HVT
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.HBEY.LMR145B_1_COHORTS g
+INNER JOIN MARKETO.LEAD b
+    ON g.USER_ID = b.USER_ID
+WHERE
+    g.CAMPAIGN_ID IN (55646, 55647)
+    AND g.ACTIVITY_TYPE_ID = 24
+    AND LOWER(g.PRIMARY_ATTRIBUTE_VALUE) LIKE '%ghost%'
+    AND g.DOMAIN NOT IN ('smartsheet.com', 'mbfcorp.com');
+
+
+-- =========================================================================
+-- STEP 2: GET USER TYPE AT TIME OF EMAIL SEND
+-- No changes in this step
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_USER_TYPE_AT_SEND2 AS
+SELECT
+    C.USER_ID,
+    C.USER_UID,
+    C.START_DATE,
+    C.CAMPAIGN_ID,
+    L.HIGHEST_USER_TYPE AS USER_TYPE_AT_SEND,
+    L.JOURNAL_DATE_TIME AS USER_TYPE_DATE
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_COHORTS2 C
+LEFT JOIN LEAD.MARKETO_SMARTSHEET_LEAD_COMBINED_J L
+    ON C.USER_ID = L.USER_ID
+    AND L.JOURNAL_DATE_TIME <= C.START_DATE
+    AND L.JOURNAL_ACTION != 'DELETE'
+WHERE L.HIGHEST_USER_TYPE IS NOT NULL
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY C.USER_ID, C.CAMPAIGN_ID, C.START_DATE
+    ORDER BY L.JOURNAL_DATE_TIME DESC
+) = 1;
+
+
+-- =========================================================================
+-- STEP 3: FILTER COHORT TO ONLY GUEST/VIEWER/GHOST AT TIME OF SEND
+-- CHANGE 2: Added 'Ghost' to WHERE clause
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_COHORTS_FILTERED2 AS
+SELECT
+    C.*,
+    UTS.USER_TYPE_AT_SEND
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_COHORTS2 C
+INNER JOIN DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_USER_TYPE_AT_SEND2 UTS
+    ON C.USER_ID = UTS.USER_ID
+    AND C.CAMPAIGN_ID = UTS.CAMPAIGN_ID
+    AND C.START_DATE = UTS.START_DATE
+WHERE UTS.USER_TYPE_AT_SEND IN ('Guest', 'Viewer', 'Ghost');
+
+
+-- =========================================================================
+-- STEP 4: TRACK USER TYPE CHANGES WITHIN 30 DAYS OF EMAIL
+-- No changes in this step
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_USER_TYPE_CHANGES2 AS
+SELECT
+    C.USER_ID,
+    C.USER_UID,
+    C.CAMPAIGN_ID,
+    C.START_DATE,
+    C.USER_TYPE_AT_SEND,
+    L.HIGHEST_USER_TYPE AS NEW_USER_TYPE,
+    L.JOURNAL_DATE_TIME AS CHANGE_DATE,
+    DATEDIFF(DAY, C.START_DATE, L.JOURNAL_DATE_TIME) AS DAYS_FROM_EMAIL
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_COHORTS_FILTERED2 C
+INNER JOIN LEAD.MARKETO_SMARTSHEET_LEAD_COMBINED_J L
+    ON C.USER_ID = L.USER_ID
+WHERE
+    L.JOURNAL_DATE_TIME > C.START_DATE
+    AND L.JOURNAL_DATE_TIME <= DATEADD(DAY, 30, C.START_DATE)
+    AND L.JOURNAL_ACTION != 'DELETE'
+    AND L.HIGHEST_USER_TYPE != C.USER_TYPE_AT_SEND
+ORDER BY C.USER_ID, L.JOURNAL_DATE_TIME;
+
+
+-- =========================================================================
+-- STEP 5A: FIRST PROVISIONAL CONVERSION
+-- No changes in this step
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_PROVISIONAL_CONVERSIONS2 AS
+SELECT
+    USER_ID,
+    USER_UID,
+    CAMPAIGN_ID,
+    START_DATE,
+    USER_TYPE_AT_SEND,
+    MIN(CHANGE_DATE) AS PROVISIONAL_DATE,
+    MIN(DAYS_FROM_EMAIL) AS DAYS_TO_PROVISIONAL
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_USER_TYPE_CHANGES2
+WHERE NEW_USER_TYPE = 'Provisional'
+GROUP BY 1, 2, 3, 4, 5;
+
+
+-- =========================================================================
+-- STEP 5B: FIRST MEMBER CONVERSION (LICENSED)
+-- No changes in this step
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_MEMBER_CONVERSIONS2 AS
+SELECT
+    USER_ID,
+    USER_UID,
+    CAMPAIGN_ID,
+    START_DATE,
+    USER_TYPE_AT_SEND,
+    MIN(CHANGE_DATE) AS MEMBER_DATE,
+    MIN(DAYS_FROM_EMAIL) AS DAYS_TO_MEMBER
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_USER_TYPE_CHANGES2
+WHERE NEW_USER_TYPE = 'Member'
+GROUP BY 1, 2, 3, 4, 5;
+
+
+-- =========================================================================
+-- STEP 5C: DOWNGRADES FROM PROVISIONAL
+-- No changes in this step
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_DOWNGRADES2 AS
+SELECT
+    PC.USER_ID,
+    PC.USER_UID,
+    PC.CAMPAIGN_ID,
+    PC.START_DATE,
+    MIN(UTC.CHANGE_DATE) AS DOWNGRADE_DATE,
+    DATEDIFF(DAY, PC.PROVISIONAL_DATE, MIN(UTC.CHANGE_DATE)) AS DAYS_FROM_PROV_TO_DOWNGRADE
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_PROVISIONAL_CONVERSIONS2 PC
+INNER JOIN DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_USER_TYPE_CHANGES2 UTC
+    ON PC.USER_ID = UTC.USER_ID
+    AND PC.CAMPAIGN_ID = UTC.CAMPAIGN_ID
+    AND PC.START_DATE = UTC.START_DATE
+WHERE
+    UTC.CHANGE_DATE > PC.PROVISIONAL_DATE
+    AND UTC.CHANGE_DATE <= DATEADD(DAY, 30, PC.PROVISIONAL_DATE)
+    AND UTC.NEW_USER_TYPE IN ('Guest', 'Viewer', 'Unlicensed', 'No Access', 'Ghost')
+GROUP BY 1, 2, 3, 4, PC.PROVISIONAL_DATE;
+
+
+-- =========================================================================
+-- STEP 5D: IDENTIFY ACTION THAT TRIGGERED PROVISIONAL CONVERSION
+-- CHANGE 3: Campaign-specific trigger action logic
+-- CHANGE 4: Feature names updated with confirmed names from validation
+--
+-- Campaign 55646 (Comment Test):
+--   Tracks 'Create Container Comment New' and 'Create Container Comment Reply'
+--   These are the ONLY two comment feature names confirmed in the data
+--   Expected result: Trigger Action Rate close to 100%
+--
+-- Campaign 55647 (Create Test):
+--   Tracks 21 confirmed Create feature names from USER_FEATURE_USAGE_DAILY
+--   Multiple qualifying actions exist — rate expected high but not 100%
+--   Excludes comment actions that appeared in 55647 activity data
+--
+-- Window: email send date (exclusive) to Provisional date (inclusive)
+-- Direct-to-Member users naturally excluded — not in Provisional table
+-- Same-day creates (FOR_DATE = PROVISIONAL_DATE) are INCLUDED via <=
+-- Validated: 2,271 users created Before, 33 Same Day, 537 After (excluded)
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_TRIGGER_ACTION2 AS
+SELECT
+    PC.USER_ID,
+    PC.USER_UID,
+    PC.CAMPAIGN_ID,
+    PC.START_DATE,
+    PC.PROVISIONAL_DATE,
+
+    -- First qualifying action date per campaign rule
+    MIN(
+        CASE
+            WHEN PC.CAMPAIGN_ID = 55646
+                AND E.FEATURE_NAME IN (
+                    'Create Container Comment New',
+                    'Create Container Comment Reply'
+                )
+            THEN E.FOR_DATE
+            WHEN PC.CAMPAIGN_ID = 55647
+                AND E.FEATURE_NAME IN (
+                    'Create Sheet',
+                    'Create Workspace',
+                    'Create Notification Workflow',
+                    'Create Any Workflow',
+                    'Create Any Workflow Excluding Tooltip',
+                    'Create Dashboard',
+                    'Create Report',
+                    'Create Folder',
+                    'Create Form',
+                    'Create Chart Widget',
+                    'Create Metric Widget',
+                    'Create Title Widget',
+                    'Create Shortcut Widget',
+                    'Create Grid Gantt Widget',
+                    'Create Rich Text Widget',
+                    'Create Image Widget',
+                    'Create Change Cell Workflow',
+                    'Create Clear Cell Workflow',
+                    'Create Move Row Workflow',
+                    'Create Reminder Workflow',
+                    'Create Conditional Formatting Rule'
+                )
+            THEN E.FOR_DATE
+        END
+    ) AS TRIGGER_ACTION_DATE,
+
+    -- Days from email send to first qualifying action
+    DATEDIFF(DAY, PC.START_DATE,
+        MIN(
+            CASE
+                WHEN PC.CAMPAIGN_ID = 55646
+                    AND E.FEATURE_NAME IN (
+                        'Create Container Comment New',
+                        'Create Container Comment Reply'
+                    )
+                THEN E.FOR_DATE
+                WHEN PC.CAMPAIGN_ID = 55647
+                    AND E.FEATURE_NAME IN (
+                        'Create Sheet',
+                        'Create Workspace',
+                        'Create Notification Workflow',
+                        'Create Any Workflow',
+                        'Create Any Workflow Excluding Tooltip',
+                        'Create Dashboard',
+                        'Create Report',
+                        'Create Folder',
+                        'Create Form',
+                        'Create Chart Widget',
+                        'Create Metric Widget',
+                        'Create Title Widget',
+                        'Create Shortcut Widget',
+                        'Create Grid Gantt Widget',
+                        'Create Rich Text Widget',
+                        'Create Image Widget',
+                        'Create Change Cell Workflow',
+                        'Create Clear Cell Workflow',
+                        'Create Move Row Workflow',
+                        'Create Reminder Workflow',
+                        'Create Conditional Formatting Rule'
+                    )
+                THEN E.FOR_DATE
+            END
+        )
+    ) AS DAYS_TO_TRIGGER_ACTION,
+
+    -- Label the trigger action type for reporting clarity
+    CASE
+        WHEN PC.CAMPAIGN_ID = 55646 THEN 'Comment'
+        WHEN PC.CAMPAIGN_ID = 55647 THEN 'Create'
+    END AS TRIGGER_ACTION_TYPE,
+
+    -- 1 if the user took the qualifying action before or on conversion date
+    -- 0 if no qualifying action found in the window
+    CASE
+        WHEN MIN(
+            CASE
+                WHEN PC.CAMPAIGN_ID = 55646
+                    AND E.FEATURE_NAME IN (
+                        'Create Container Comment New',
+                        'Create Container Comment Reply'
+                    )
+                THEN E.FOR_DATE
+                WHEN PC.CAMPAIGN_ID = 55647
+                    AND E.FEATURE_NAME IN (
+                        'Create Sheet',
+                        'Create Workspace',
+                        'Create Notification Workflow',
+                        'Create Any Workflow',
+                        'Create Any Workflow Excluding Tooltip',
+                        'Create Dashboard',
+                        'Create Report',
+                        'Create Folder',
+                        'Create Form',
+                        'Create Chart Widget',
+                        'Create Metric Widget',
+                        'Create Title Widget',
+                        'Create Shortcut Widget',
+                        'Create Grid Gantt Widget',
+                        'Create Rich Text Widget',
+                        'Create Image Widget',
+                        'Create Change Cell Workflow',
+                        'Create Clear Cell Workflow',
+                        'Create Move Row Workflow',
+                        'Create Reminder Workflow',
+                        'Create Conditional Formatting Rule'
+                    )
+                THEN E.FOR_DATE
+            END
+        ) IS NOT NULL THEN 1
+        ELSE 0
+    END AS HAD_TRIGGER_ACTION
+
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_PROVISIONAL_CONVERSIONS2 PC
+LEFT JOIN USAGE.USER_FEATURE_USAGE_DAILY E
+    ON PC.USER_ID = E.USER_ID
+    -- Window: after email send up to and including Provisional date
+    AND E.FOR_DATE > DATE(PC.START_DATE)
+    AND E.FOR_DATE <= DATE(PC.PROVISIONAL_DATE)
+    AND E.COUNT_ALL_SOURCES > 0
+    -- Only join relevant actions per campaign to keep the join efficient
+    AND (
+        (PC.CAMPAIGN_ID = 55646
+            AND E.FEATURE_NAME IN (
+                'Create Container Comment New',
+                'Create Container Comment Reply'
+            )
+        )
+        OR
+        (PC.CAMPAIGN_ID = 55647
+            AND E.FEATURE_NAME IN (
+                'Create Sheet',
+                'Create Workspace',
+                'Create Notification Workflow',
+                'Create Any Workflow',
+                'Create Any Workflow Excluding Tooltip',
+                'Create Dashboard',
+                'Create Report',
+                'Create Folder',
+                'Create Form',
+                'Create Chart Widget',
+                'Create Metric Widget',
+                'Create Title Widget',
+                'Create Shortcut Widget',
+                'Create Grid Gantt Widget',
+                'Create Rich Text Widget',
+                'Create Image Widget',
+                'Create Change Cell Workflow',
+                'Create Clear Cell Workflow',
+                'Create Move Row Workflow',
+                'Create Reminder Workflow',
+                'Create Conditional Formatting Rule'
+            )
+        )
+    )
+GROUP BY 1, 2, 3, 4, 5;
+
+
+-- =========================================================================
+-- STEP 6: TRACK ACTIVITY/LOGINS WITHIN 30 DAYS
+-- No changes in this step
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_LOGINS2 AS
+SELECT
+    C.USER_ID,
+    C.USER_UID,
+    C.CAMPAIGN_ID,
+    C.START_DATE,
+    COUNT(DISTINCT E.FOR_DATE) AS LOGIN_COUNT,
+    MAX(CASE WHEN E.FOR_DATE IS NOT NULL THEN 1 ELSE 0 END) AS HAD_LOGIN,
+    MIN(E.FOR_DATE) AS FIRST_LOGIN_DATE,
+    MIN(DATEDIFF(DAY, C.START_DATE, E.FOR_DATE)) AS DAYS_TO_FIRST_LOGIN
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_COHORTS_FILTERED2 C
+LEFT JOIN USAGE.USER_FEATURE_USAGE_DAILY E
+    ON C.USER_ID = E.USER_ID
+    AND E.FOR_DATE > DATE(C.START_DATE)
+    AND E.FOR_DATE <= DATEADD(DAY, 30, DATE(C.START_DATE))
+    AND E.COUNT_ALL_SOURCES > 0
+GROUP BY 1, 2, 3, 4;
+
+
+-- =========================================================================
+-- STEP 7: TRACK ENGAGEMENT METRICS WITHIN 30 DAYS
+-- No changes — window remains full 30 days per client confirmation
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_ENGAGEMENT2 AS
+SELECT
+    C.USER_ID,
+    C.USER_UID,
+    C.CAMPAIGN_ID,
+    C.START_DATE,
+    SUM(CASE WHEN E.FEATURE_NAME LIKE '%Comment%' THEN E.COUNT_ALL_SOURCES ELSE 0 END)                                           AS COMMENT_COUNT,
+    MAX(CASE WHEN E.FEATURE_NAME LIKE '%Comment%' AND E.COUNT_ALL_SOURCES > 0 THEN 1 ELSE 0 END)                                 AS HAD_COMMENT,
+    SUM(CASE WHEN E.FEATURE_NAME LIKE '%Create%' THEN E.COUNT_ALL_SOURCES ELSE 0 END)                                            AS CREATE_COUNT,
+    MAX(CASE WHEN E.FEATURE_NAME LIKE '%Create%' AND E.COUNT_ALL_SOURCES > 0 THEN 1 ELSE 0 END)                                  AS HAD_CREATE,
+    SUM(E.COUNT_ALL_SOURCES)                                                                                                      AS TOTAL_ENGAGEMENT_COUNT,
+    SUM(CASE WHEN E.FEATURE_NAME LIKE '%Comment%' AND E.FEATURE_NAME NOT LIKE '%Reply%' THEN E.COUNT_ALL_SOURCES ELSE 0 END)     AS CREATE_COMMENT_NEW_COUNT,
+    MAX(CASE WHEN E.FEATURE_NAME LIKE '%Comment%' AND E.FEATURE_NAME NOT LIKE '%Reply%' AND E.COUNT_ALL_SOURCES > 0 THEN 1 ELSE 0 END) AS HAD_CREATE_COMMENT_NEW,
+    SUM(CASE WHEN E.FEATURE_NAME LIKE '%Comment%' AND E.FEATURE_NAME LIKE '%Reply%' THEN E.COUNT_ALL_SOURCES ELSE 0 END)         AS CREATE_COMMENT_REPLY_COUNT,
+    MAX(CASE WHEN E.FEATURE_NAME LIKE '%Comment%' AND E.FEATURE_NAME LIKE '%Reply%' AND E.COUNT_ALL_SOURCES > 0 THEN 1 ELSE 0 END) AS HAD_CREATE_COMMENT_REPLY,
+    SUM(CASE WHEN E.FEATURE_NAME LIKE '%Create%' AND E.FEATURE_NAME LIKE '%Sheet%' THEN E.COUNT_ALL_SOURCES ELSE 0 END)          AS CREATE_SHEET_COUNT,
+    MAX(CASE WHEN E.FEATURE_NAME LIKE '%Create%' AND E.FEATURE_NAME LIKE '%Sheet%' AND E.COUNT_ALL_SOURCES > 0 THEN 1 ELSE 0 END) AS HAD_CREATE_SHEET,
+    SUM(CASE WHEN E.FEATURE_NAME LIKE '%Create%' AND E.FEATURE_NAME LIKE '%Workspace%' THEN E.COUNT_ALL_SOURCES ELSE 0 END)      AS CREATE_WORKSPACE_COUNT,
+    MAX(CASE WHEN E.FEATURE_NAME LIKE '%Create%' AND E.FEATURE_NAME LIKE '%Workspace%' AND E.COUNT_ALL_SOURCES > 0 THEN 1 ELSE 0 END) AS HAD_CREATE_WORKSPACE
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_COHORTS_FILTERED2 C
+LEFT JOIN USAGE.USER_FEATURE_USAGE_DAILY E
+    ON C.USER_ID = E.USER_ID
+    AND E.FOR_DATE > DATE(C.START_DATE)
+    AND E.FOR_DATE <= DATEADD(DAY, 30, DATE(C.START_DATE))
+GROUP BY 1, 2, 3, 4;
+
+
+-- =========================================================================
+-- STEP 8: FINAL TABLE
+-- CHANGE 5: Simplified trigger columns from Step 5D
+--           Added ADMIN_PROMOTED_TO_MEMBER flag
+-- =========================================================================
+CREATE OR REPLACE TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_FINAL2 AS
+SELECT
+    C.USER_ID,
+    C.USER_UID,
+    C.START_DATE,
+    C.CAMPAIGN_ID,
+    C.PRIMARY_ATTRIBUTE_VALUE,
+    C.CAMPAIGN_ID_FRIENDLY,
+    C.ACTIVITY_TYPE_ID,
+    C.ACTIVITY_NAME,
+    C.EMAIL_ADDRESS,
+    C.USER_TYPE_AT_SEND,
+    C.PLAN_ID,
+    C.PLAN_UID,
+    C.PRODUCT_NAME_AT_SEND,
+    C.DOMAIN_TYPE,
+    C.DOMAIN,
+    C.COMPANY_SIZE,
+    C.COMPANY_SIZE_RANGE,
+    C.SMARTSHEET_INSTANCE,
+    C.HAS_CS_REP,
+    C.SUPPORT_TYPE,
+    C.STILL_LICENSED,
+    C.IS_USER_SUBSCRIPTION_MODEL,
+    C.LANGUAGE,
+    C.HVT,
+
+    -- Login metrics
+    COALESCE(L.HAD_LOGIN, 0)   AS HAD_LOGIN,
+    COALESCE(L.LOGIN_COUNT, 0) AS LOGIN_COUNT,
+    L.FIRST_LOGIN_DATE,
+    L.DAYS_TO_FIRST_LOGIN,
+
+    -- Provisional conversion
+    CASE WHEN PC.USER_ID IS NOT NULL THEN 1 ELSE 0 END AS BECAME_PROVISIONAL,
+    PC.PROVISIONAL_DATE,
+    PC.DAYS_TO_PROVISIONAL,
+
+    -- Member conversion
+    CASE WHEN MC.USER_ID IS NOT NULL THEN 1 ELSE 0 END AS BECAME_MEMBER,
+    MC.MEMBER_DATE,
+    MC.DAYS_TO_MEMBER,
+
+    -- Organic Member path (Provisional → Member)
+    CASE
+        WHEN PC.USER_ID IS NOT NULL
+            AND MC.USER_ID IS NOT NULL
+            AND MC.MEMBER_DATE >= PC.PROVISIONAL_DATE
+        THEN 1
+        ELSE 0
+    END AS MEMBER_FROM_PROVISIONAL,
+
+    -- Admin-promoted flag: became Member WITHOUT going through Provisional
+    -- These users are excluded from trigger analysis
+    CASE
+        WHEN MC.USER_ID IS NOT NULL
+            AND PC.USER_ID IS NULL
+        THEN 1
+        ELSE 0
+    END AS ADMIN_PROMOTED_TO_MEMBER,
+
+    -- Downgrade metrics
+    CASE WHEN D.USER_ID IS NOT NULL THEN 1 ELSE 0 END AS WAS_DOWNGRADED,
+    D.DOWNGRADE_DATE,
+    D.DAYS_FROM_PROV_TO_DOWNGRADE,
+
+    -- Trigger action columns (Step 5D)
+    -- NULL for non-Provisional and Admin-promoted users
+    -- 'Comment' for Campaign 55646 | 'Create' for Campaign 55647
+    TA.TRIGGER_ACTION_TYPE,
+    TA.TRIGGER_ACTION_DATE,
+    TA.DAYS_TO_TRIGGER_ACTION,
+    TA.HAD_TRIGGER_ACTION,
+
+    -- Engagement metrics (full 30-day window)
+    COALESCE(ENG.COMMENT_COUNT, 0)              AS COMMENT_COUNT,
+    COALESCE(ENG.HAD_COMMENT, 0)                AS HAD_COMMENT,
+    COALESCE(ENG.CREATE_COUNT, 0)               AS CREATE_COUNT,
+    COALESCE(ENG.HAD_CREATE, 0)                 AS HAD_CREATE,
+    COALESCE(ENG.TOTAL_ENGAGEMENT_COUNT, 0)     AS TOTAL_ENGAGEMENT_COUNT,
+    COALESCE(ENG.CREATE_COMMENT_NEW_COUNT, 0)   AS CREATE_COMMENT_NEW_COUNT,
+    COALESCE(ENG.HAD_CREATE_COMMENT_NEW, 0)     AS HAD_CREATE_COMMENT_NEW,
+    COALESCE(ENG.CREATE_COMMENT_REPLY_COUNT, 0) AS CREATE_COMMENT_REPLY_COUNT,
+    COALESCE(ENG.HAD_CREATE_COMMENT_REPLY, 0)   AS HAD_CREATE_COMMENT_REPLY,
+    COALESCE(ENG.CREATE_SHEET_COUNT, 0)         AS CREATE_SHEET_COUNT,
+    COALESCE(ENG.HAD_CREATE_SHEET, 0)           AS HAD_CREATE_SHEET,
+    COALESCE(ENG.CREATE_WORKSPACE_COUNT, 0)     AS CREATE_WORKSPACE_COUNT,
+    COALESCE(ENG.HAD_CREATE_WORKSPACE, 0)       AS HAD_CREATE_WORKSPACE
+
+FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_COHORTS_FILTERED2 C
+LEFT JOIN DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_LOGINS2 L
+    ON C.USER_ID = L.USER_ID
+    AND C.CAMPAIGN_ID = L.CAMPAIGN_ID
+    AND C.START_DATE = L.START_DATE
+LEFT JOIN DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_PROVISIONAL_CONVERSIONS2 PC
+    ON C.USER_ID = PC.USER_ID
+    AND C.CAMPAIGN_ID = PC.CAMPAIGN_ID
+    AND C.START_DATE = PC.START_DATE
+LEFT JOIN DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_MEMBER_CONVERSIONS2 MC
+    ON C.USER_ID = MC.USER_ID
+    AND C.CAMPAIGN_ID = MC.CAMPAIGN_ID
+    AND C.START_DATE = MC.START_DATE
+LEFT JOIN DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_DOWNGRADES2 D
+    ON C.USER_ID = D.USER_ID
+    AND C.CAMPAIGN_ID = D.CAMPAIGN_ID
+    AND C.START_DATE = D.START_DATE
+LEFT JOIN DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_TRIGGER_ACTION2 TA
+    ON C.USER_ID = TA.USER_ID
+    AND C.CAMPAIGN_ID = TA.CAMPAIGN_ID
+    AND C.START_DATE = TA.START_DATE
+LEFT JOIN DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_ENGAGEMENT2 ENG
+    ON C.USER_ID = ENG.USER_ID
+    AND C.CAMPAIGN_ID = ENG.CAMPAIGN_ID
+    AND C.START_DATE = ENG.START_DATE;
+
+
+-- =========================================================================
+-- ADD NEW LOGO FLAG
+-- No changes in this step
+-- =========================================================================
+ALTER TABLE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_FINAL2
+ADD COLUMN NEW_LOGO NUMBER(38,0);
+
+UPDATE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_FINAL2 AS A
+SET A.NEW_LOGO = 1
+FROM (
+    SELECT
+        A1.DOMAIN,
+        MIN(COALESCE(ADP.START_MONTH, '9999-12-01')) AS NEW_LOGO_MONTH
+    FROM DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_FINAL2 AS A1
+    LEFT JOIN WORK.C_DUNN_ALL_DOMAINS_PURCHASED AS ADP
+        ON A1.DOMAIN = ADP.DOMAIN
+    WHERE A1.DOMAIN_TYPE = 'Org'
+    GROUP BY 1
+) AS B
+WHERE
+    A.BECAME_MEMBER = 1
+    AND TO_VARCHAR(A.MEMBER_DATE, 'YYYY-MM') < TO_VARCHAR(B.NEW_LOGO_MONTH)
+    AND A.DOMAIN = B.DOMAIN;
+
+UPDATE DEPT_410_PPM_AP_WORKSPACE_DB.FDLT.FREE_TO_PROV_FINAL2
+SET NEW_LOGO = 0
+WHERE NEW_LOGO IS NULL;
